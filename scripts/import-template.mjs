@@ -1,3 +1,4 @@
+import { detectImage } from '../src/features/studio-v2/core/media-policy.ts';
 import { readFile } from "node:fs/promises";
 
 const [file, origin, action] = process.argv.slice(2);
@@ -16,10 +17,20 @@ if (pack.format !== "invito-template" || pack.version !== 1 || !pack.document ||
 const document = pack.document;
 const path = `/api/studio-v2/projects/${encodeURIComponent(document.id)}`;
 const assets = Object.values(document.assets);
-const media = new Map(pack.media.map(entry => [entry.assetId, entry.data]));
-if (assets.length !== pack.media.length || assets.some(asset =>
-  !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(media.get(asset.id) ?? "")
-)) throw new Error("Expected one raster upload for each document asset");
+const media = new Map();
+for (const { assetId, data } of pack.media) {
+  if (media.has(assetId) || typeof data !== "string" ||
+      data.length % 4 !== 0 || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) {
+    throw new Error("Invalid template media entry");
+  }
+  const bytes = Buffer.from(data, "base64");
+  const type = detectImage(bytes);
+  if (!type || type === "image/svg+xml") throw new Error("Expected raster media");
+  media.set(assetId, { bytes, type });
+}
+if (assets.length !== media.size || assets.some(asset => !media.has(asset.id))) {
+  throw new Error("Expected one raster upload for each document asset");
+}
 
 async function api(suffix, method, body, type = "application/json", allowedStatus = 0) {
   const response = await fetch(new URL(path + suffix, base), {
@@ -41,8 +52,8 @@ if (assets.length && !current) {
   document.revision = draft.revision;
 }
 for (const asset of assets) {
-  const [, type, encoded] = /^data:(image\/[^;]+);base64,(.+)$/.exec(media.get(asset.id));
-  const upload = await api("/assets", "POST", Buffer.from(encoded, "base64"), type);
+  const { bytes, type } = media.get(asset.id);
+  const upload = await api("/assets", "POST", bytes, type);
   Object.assign(asset, upload);
 }
 const saved = await api("/draft", "PUT", JSON.stringify(document));

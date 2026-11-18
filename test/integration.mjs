@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { once } from "node:events";
 import { setTimeout } from "node:timers/promises";
 import { test } from "node:test";
+import { promisify } from "node:util";
 import sharp from "sharp";
 import { createEmptyProjectV2 } from "../src/features/studio-v2/core/document.schema.ts";
 import { createWidget } from "../src/features/studio-v2/core/invitation-behavior.ts";
@@ -110,6 +111,20 @@ test("Studio API, persisted snapshots, public SSR and live RSVP", async () => {
     assert.ok(results.some(result => result.status === 429));
     const events = await (await request(projectPath + "/audit", 200, { actor: admin })).json();
     assert.equal(events.filter(event => event.action === "publication.create").length, 2);
+
+    const exportFile = join(temp, "studio-template.invito.json");
+    const exported = { ...draft, id: "importedProject" };
+    await writeFile(exportFile, JSON.stringify({
+      format: "invito-template", version: 1, document: exported,
+      media: [{ assetId: "poster", data: raster.toString("base64") }],
+    }));
+    const imported = await promisify(execFile)(process.execPath,
+      ["scripts/import-template.mjs", exportFile, origin, "--publish"],
+      { env: { ...process.env, STUDIO_TOKEN: admin.token } });
+    assert.match(imported.stdout, /Draft revision 2/);
+    const importedUrl = imported.stdout.trim().split(/\r?\n/).at(-1);
+    const importedPage = await (await request(new URL(importedUrl).pathname, 200)).text();
+    assert.match(importedPage, /\/assets\/poster/);
 
     await stop();
     await start();
